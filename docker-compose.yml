@@ -6,13 +6,15 @@ services:
     env_file:
       - .env
     environment:
-      # Force safe defaults inside container
-      WHISPER_DEVICE: "cpu"
-
       # Cache locations (mounted below) to avoid repeated model downloads
       HF_HOME: "/cache/huggingface"
       TRANSFORMERS_CACHE: "/cache/huggingface"
       XDG_CACHE_HOME: "/cache"
+      # Fast-Whisper runtime hints (override in .env):
+      # FAST_WHISPER_DEVICE: auto|cpu|cuda|mps (default auto)
+      # FAST_WHISPER_MODEL: tiny|base|small|...
+      FAST_WHISPER_DEVICE: "auto"
+      FAST_WHISPER_MODEL: "tiny"
     volumes:
       - ./:/app
       - ./_cache:/cache

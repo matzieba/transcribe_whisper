@@ -1,4 +1,4 @@
-
+# diarize_transcribe.py
 from __future__ import annotations
 
 import os
@@ -95,6 +95,20 @@ def ensure_wav_16k_mono(
     return dst
 
 
+def _best_device() -> str:
+    """
+    Prefer MPS on Apple Silicon, else CPU.
+    """
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 # -----------------------------
 # Model loaders (cached)
 # -----------------------------
@@ -134,10 +148,20 @@ def get_transcriber(prefer_faster_whisper: bool = True):
         try:
             from faster_whisper import WhisperModel
 
-            device = "cpu"  # faster-whisper uses ctranslate2; MPS not used here
-            compute_type = "int8"  # speed + lower RAM; good on laptops
+            # Env-driven device selection: FAST_WHISPER_DEVICE or WHISPER_DEVICE.
+            # Options: auto (default), cpu, cuda, mps.
+            device_env = os.environ.get("FAST_WHISPER_DEVICE") or os.environ.get("WHISPER_DEVICE")
+            device = (device_env or "auto").strip().lower()
+            if device == "auto":
+                device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") not in {None, ""} else "cpu"
 
-            model = WhisperModel("small", device=device, compute_type=compute_type)
+            # Default to tiny model for speed; override via FAST_WHISPER_MODEL.
+            model_size = (os.environ.get("FAST_WHISPER_MODEL") or "tiny").strip()
+
+            # int8 is fast on CPU; use int8_float16 on GPU for speed/quality.
+            compute_type = "int8_float16" if device == "cuda" else "int8"
+
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
             def _fw_transcribe(wav_path: Path) -> List[TranscriptionSegment]:
                 segments, _info = model.transcribe(
@@ -279,8 +303,7 @@ def run_pipeline(
     elapsed = time.perf_counter() - t0
     print(
         f"[timing] pipeline completed in {elapsed:.2f}s "
-        f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper={prefer_faster_whisper})",
-        flush=True,
+        f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper={prefer_faster_whisper})"
     )
     return merged
 
