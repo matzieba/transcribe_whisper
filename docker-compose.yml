@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # Force safe defaults inside container
+      WHISPER_DEVICE: "cpu"
+
+      # Cache locations (mounted below) to avoid repeated model downloads
+      HF_HOME: "/cache/huggingface"
+      TRANSFORMERS_CACHE: "/cache/huggingface"
+      XDG_CACHE_HOME: "/cache"
+    volumes:
+      - ./:/app
+      - ./_cache:/cache

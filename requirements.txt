@@ -1,0 +1,10 @@
+streamlit==1.37.1
+requests==2.32.3
+python-dotenv==1.0.1
+
+openai-whisper==20231117
+faster-whisper==1.0.3
+
+pyannote.audio==3.3.2
+huggingface_hub==0.23.4
+matplotlib==3.9.0
