@@ -11,7 +11,7 @@ services:
       TRANSFORMERS_CACHE: "/cache/huggingface"
       XDG_CACHE_HOME: "/cache"
       # Fast-Whisper runtime hints (override in .env):
-      # FAST_WHISPER_DEVICE: auto|cpu|cuda|mps (default auto)
+      # FAST_WHISPER_DEVICE: auto|cpu (default auto)
       # FAST_WHISPER_MODEL: tiny|base|small|...
       FAST_WHISPER_DEVICE: "auto"
       FAST_WHISPER_MODEL: "tiny"

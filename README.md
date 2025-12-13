@@ -13,7 +13,7 @@
   - `.env` example: `HF_TOKEN=hf_your_token_here`
   - Optional: `ENABLE_DIARIZATION=false` to skip diarization (no HF token needed).
 - Speed/compute toggles (override in `.env`):
-  - `FAST_WHISPER_DEVICE`: `auto` (default), `cpu`, `cuda`, or `mps`. Use `cuda` with `docker run --gpus all`/compose GPU support.
+  - `FAST_WHISPER_DEVICE`: `auto` (default) or `cpu`. Docker on Apple Silicon runs CPU-only.
   - `FAST_WHISPER_MODEL`: whisper size; defaults to `tiny` for speed (`base`/`small` for quality).
 
 ## Run the transcription script (CLI)
