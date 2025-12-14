@@ -66,11 +66,11 @@ def download_file(url: str, dst: Path, timeout_sec: int = 60) -> Path:
     if dst.exists() and dst.stat().st_size > 50_000:
         return dst
 
-    with requests.get(url, stream=True, timeout=timeout_sec) as r:
-        r.raise_for_status()
+    with requests.get(url, stream=True, timeout=timeout_sec) as response:
+        response.raise_for_status()
         tmp = dst.with_suffix(dst.suffix + ".part")
         with open(tmp, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
         tmp.replace(dst)
@@ -112,12 +112,12 @@ def get_diarization_pipeline():
             DIAR_MODEL,
             use_auth_token=HF_TOKEN,
         )
-    except Exception as e:
+    except Exception as exc:
         raise RuntimeError(
             "Failed to load pyannote diarization pipeline. "
             "Ensure your HF_TOKEN is valid and that you accepted access at "
             "https://hf.co/pyannote/speaker-diarization-3.1."
-        ) from e
+        ) from exc
 
     if pipeline is None:
         raise RuntimeError("pyannote Pipeline.from_pretrained returned None (unexpected).")
@@ -126,21 +126,9 @@ def get_diarization_pipeline():
 
 @lru_cache(maxsize=1)
 def get_transcriber():
-    """
-    Returns a faster-whisper model instance for transcription.
-    """
-    # Env-driven device selection: FAST_WHISPER_DEVICE or WHISPER_DEVICE.
-    # Options: auto (default), cpu, cuda, mps.
-    device_env = os.environ.get("FAST_WHISPER_DEVICE") or os.environ.get("WHISPER_DEVICE")
-    device = (device_env or "auto").strip().lower()
-    if device == "auto":
-        device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") not in {None, ""} else "cpu"
-
-    # Default to tiny model for speed; override via FAST_WHISPER_MODEL.
+    device = "cpu"
     model_size = (os.environ.get("FAST_WHISPER_MODEL") or "tiny").strip()
-
-    # int8 is fast on CPU; use int8_float16 on GPU for speed/quality.
-    compute_type = "int8_float16" if device == "cuda" else "int8"
+    compute_type = "int8"
 
     return WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -162,8 +150,8 @@ def diarize_audio(wav_16k_mono: Path) -> List[DiarizationSegment]:
     )
 
     segments: List[DiarizationSegment] = []
-    for segment, _track, speaker in annotation.itertracks(yield_label=True):
-        segments.append(DiarizationSegment(segment.start, segment.end, str(speaker)))
+    for segment, unused_track, speaker_label in annotation.itertracks(yield_label=True):
+        segments.append(DiarizationSegment(segment.start, segment.end, str(speaker_label)))
 
     segments.sort(key=lambda s: (s.start, s.end))
     return segments
@@ -171,18 +159,18 @@ def diarize_audio(wav_16k_mono: Path) -> List[DiarizationSegment]:
 
 def transcribe_audio(wav_16k_mono: Path) -> List[TranscriptionSegment]:
     model = get_transcriber()
-    segments, _info = model.transcribe(
+    raw_segments, unused_model_info = model.transcribe(
         str(wav_16k_mono),
         vad_filter=True,  # skip silences => faster
         beam_size=1,      # faster
     )
-    out: List[TranscriptionSegment] = []
-    for s in segments:
-        text = (s.text or "").strip()
+    transcription_segments: List[TranscriptionSegment] = []
+    for segment in raw_segments:
+        text = (segment.text or "").strip()
         if text:
-            out.append(TranscriptionSegment(s.start, s.end, text))
-    out.sort(key=lambda s: (s.start, s.end))
-    return out
+            transcription_segments.append(TranscriptionSegment(segment.start, segment.end, text))
+    transcription_segments.sort(key=lambda s: (s.start, s.end))
+    return transcription_segments
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -190,33 +178,38 @@ def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
 
 
 def merge_diarization_and_transcript(
-    diar: List[DiarizationSegment],
-    tr: List[TranscriptionSegment],
+    diarization_segments: List[DiarizationSegment],
+    transcription_segments: List[TranscriptionSegment],
 ) -> List[LabeledSegment]:
     """
     Linear-time sweep merge (fast). Assumes inputs sorted by start time.
     """
     out: List[LabeledSegment] = []
-    j = 0  # diar index
+    diar_index = 0
 
-    for t in tr:
+    for transcript in transcription_segments:
         # advance diar segments that end before this transcript starts
-        while j < len(diar) and diar[j].end <= t.start:
-            j += 1
+        while diar_index < len(diarization_segments) and diarization_segments[diar_index].end <= transcript.start:
+            diar_index += 1
 
         best_speaker = "Unknown"
         best_ov = 0.0
 
-        k = j
+        overlap_index = diar_index
         # check diar segments that might overlap this transcript segment
-        while k < len(diar) and diar[k].start < t.end:
-            ov = _overlap(t.start, t.end, diar[k].start, diar[k].end)
+        while overlap_index < len(diarization_segments) and diarization_segments[overlap_index].start < transcript.end:
+            ov = _overlap(
+                transcript.start,
+                transcript.end,
+                diarization_segments[overlap_index].start,
+                diarization_segments[overlap_index].end,
+            )
             if ov > best_ov:
                 best_ov = ov
-                best_speaker = diar[k].speaker
-            k += 1
+                best_speaker = diarization_segments[overlap_index].speaker
+            overlap_index += 1
 
-        out.append(LabeledSegment(t.start, t.end, best_speaker, t.text))
+        out.append(LabeledSegment(transcript.start, transcript.end, best_speaker, transcript.text))
     return out
 
 
@@ -226,39 +219,39 @@ def run_pipeline(
     max_duration_sec: Optional[float] = None,
     enable_diarization: Optional[bool] = None,
 ) -> List[LabeledSegment]:
-    t0 = time.perf_counter()
-    raw = download_file(url, workdir / "input.mp3")
+    start_time = time.perf_counter()
+    downloaded_audio = download_file(url, workdir / "input.mp3")
     # Use a duration-specific cache key so changing max_duration actually regenerates audio.
     duration_tag = "full" if max_duration_sec is None else str(max_duration_sec).replace(".", "p")
-    wav = ensure_wav_16k_mono(
-        raw,
+    wav_path = ensure_wav_16k_mono(
+        downloaded_audio,
         workdir / f"audio_16k_mono_{duration_tag}.wav",
         max_duration_sec=max_duration_sec,
     )
 
     do_diarization = ENABLE_DIARIZATION if enable_diarization is None else bool(enable_diarization)
 
-    diar: List[DiarizationSegment]
+    diarization_segments: List[DiarizationSegment]
     if do_diarization:
-        diar = diarize_audio(wav)
+        diarization_segments = diarize_audio(wav_path)
     else:
-        diar = []
+        diarization_segments = []
 
-    tr = transcribe_audio(wav)
-    merged = merge_diarization_and_transcript(diar, tr)
+    transcription_segments = transcribe_audio(wav_path)
+    labeled_segments = merge_diarization_and_transcript(diarization_segments, transcription_segments)
 
-    elapsed = time.perf_counter() - t0
+    elapsed = time.perf_counter() - start_time
     print(
         f"[timing] pipeline completed in {elapsed:.2f}s "
         f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper=True)"
     )
-    return merged
+    return labeled_segments
 
 
 def main():
-    merged = run_pipeline(max_duration_sec=60)
-    for s in merged:
-        print(f"[{s.start:6.2f} → {s.end:6.2f}] {s.speaker}: {s.text}")
+    labeled_segments = run_pipeline(max_duration_sec=60)
+    for segment in labeled_segments:
+        print(f"[{segment.start:6.2f} → {segment.end:6.2f}] {segment.speaker}: {segment.text}")
 
 
 if __name__ == "__main__":
