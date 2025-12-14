@@ -188,7 +188,6 @@ def merge_diarization_and_transcript(
     diar_index = 0
 
     for transcript in transcription_segments:
-        # advance diar segments that end before this transcript starts
         while diar_index < len(diarization_segments) and diarization_segments[diar_index].end <= transcript.start:
             diar_index += 1
 
@@ -196,7 +195,6 @@ def merge_diarization_and_transcript(
         best_ov = 0.0
 
         overlap_index = diar_index
-        # check diar segments that might overlap this transcript segment
         while overlap_index < len(diarization_segments) and diarization_segments[overlap_index].start < transcript.end:
             ov = _overlap(
                 transcript.start,
@@ -221,7 +219,6 @@ def run_pipeline(
 ) -> List[LabeledSegment]:
     start_time = time.perf_counter()
     downloaded_audio = download_file(url, workdir / "input.mp3")
-    # Use a duration-specific cache key so changing max_duration actually regenerates audio.
     duration_tag = "full" if max_duration_sec is None else str(max_duration_sec).replace(".", "p")
     wav_path = ensure_wav_16k_mono(
         downloaded_audio,
