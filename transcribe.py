@@ -1,3 +1,5 @@
+import time
+
 import requests
 import whisper
 
@@ -36,14 +38,23 @@ def transcribe_audio(local_path: str) -> str:
 
 
 def main():
+    t0 = time.perf_counter()
+
     # 1) Download the file
     audio_path = download_audio_file()
+    t_dl = time.perf_counter()
 
     # 2) Transcribe the audio
     transcript_text = transcribe_audio(audio_path)
+    t_tx = time.perf_counter()
 
     # 3) Print or save the transcript
-    print("TRANSCRIPT:\n", transcript_text)
+    print("TRANSCRIPT:\n", transcript_text, flush=True)
+
+    print(
+        f"[timing] download={t_dl - t0:.2f}s transcribe={t_tx - t_dl:.2f}s total={t_tx - t0:.2f}s",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

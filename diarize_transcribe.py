@@ -1,19 +1,19 @@
-# diarize_transcribe.py
+
 from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import requests
 
 AUDIO_URL = "https://github.com/AssemblyAI-Examples/audio-examples/raw/main/20230607_me_canadian_wildfires.mp3"
 
-# Never hardcode secrets; require env var in real use.
-HF_TOKEN = os.environ.get("HF_TOKEN")  # required for pyannote pipeline
+HF_TOKEN = os.environ.get("HF_TOKEN")
 DIAR_MODEL = "pyannote/speaker-diarization-3.1"
 ENABLE_DIARIZATION = (
     os.environ.get("ENABLE_DIARIZATION", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -95,20 +95,6 @@ def ensure_wav_16k_mono(
     return dst
 
 
-def _best_device() -> str:
-    """
-    Prefer MPS on Apple Silicon, else CPU.
-    """
-    try:
-        import torch
-
-        if torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
 # -----------------------------
 # Model loaders (cached)
 # -----------------------------
@@ -122,16 +108,11 @@ def get_diarization_pipeline():
     from pyannote.audio import Pipeline
 
     try:
-        # Debug log to confirm token is wired through (mask most of it).
-        prefix = HF_TOKEN[:6] if HF_TOKEN else ""
-        print(f"[debug] HF_TOKEN present? {bool(HF_TOKEN)}; prefix={prefix!r}")
-
         pipeline = Pipeline.from_pretrained(
             DIAR_MODEL,
             use_auth_token=HF_TOKEN,
         )
     except Exception as e:
-        # Common causes: token missing model access or terms not accepted.
         raise RuntimeError(
             "Failed to load pyannote diarization pipeline. "
             "Ensure your HF_TOKEN is valid and that you accepted access at "
@@ -140,18 +121,6 @@ def get_diarization_pipeline():
 
     if pipeline is None:
         raise RuntimeError("pyannote Pipeline.from_pretrained returned None (unexpected).")
-
-    # Try moving to MPS; fallback to CPU if pyannote/torch op unsupported.
-    device = _best_device()
-    if device == "mps":
-        try:
-            import torch
-
-            pipeline.to(torch.device("mps"))
-        except Exception:
-            # safe fallback
-            pass
-
     return pipeline
 
 
@@ -189,7 +158,7 @@ def get_transcriber(prefer_faster_whisper: bool = True):
 
     import whisper
 
-    device = _best_device()
+    device = "cpu"
     model = whisper.load_model("small", device=device)
 
     def _whisper_transcribe(wav_path: Path) -> List[TranscriptionSegment]:
@@ -286,6 +255,7 @@ def run_pipeline(
     prefer_faster_whisper: bool = True,
     enable_diarization: Optional[bool] = None,
 ) -> List[LabeledSegment]:
+    t0 = time.perf_counter()
     raw = download_file(url, workdir / "input.mp3")
     # Use a duration-specific cache key so changing max_duration actually regenerates audio.
     duration_tag = "full" if max_duration_sec is None else str(max_duration_sec).replace(".", "p")
@@ -304,7 +274,15 @@ def run_pipeline(
         diar = []
 
     tr = transcribe_audio(wav, prefer_faster_whisper=prefer_faster_whisper)
-    return merge_diarization_and_transcript(diar, tr)
+    merged = merge_diarization_and_transcript(diar, tr)
+
+    elapsed = time.perf_counter() - t0
+    print(
+        f"[timing] pipeline completed in {elapsed:.2f}s "
+        f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper={prefer_faster_whisper})",
+        flush=True,
+    )
+    return merged
 
 
 def main():

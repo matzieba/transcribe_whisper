@@ -1,4 +1,3 @@
-# streamlit_app.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +13,6 @@ st.set_page_config(page_title="Transcription + Diarization", layout="wide")
 
 @st.cache_data(show_spinner=False)
 def cached_run(url: str, max_duration: float | None, prefer_faster_whisper: bool):
-    # cache final result by inputs
     return run_pipeline(
         url=url,
         max_duration_sec=max_duration,
@@ -23,7 +21,7 @@ def cached_run(url: str, max_duration: float | None, prefer_faster_whisper: bool
 
 
 def main():
-    st.title("Whisper + PyAnnote Speaker Diarization Demo (Optimized)")
+    st.title("Whisper + PyAnnote Speaker Diarization")
 
     url = st.text_input("Audio URL", value=AUDIO_URL)
     max_duration = st.number_input("Max duration (seconds, 0 = full)", min_value=0, value=60)
