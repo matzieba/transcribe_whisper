@@ -1,7 +1,9 @@
+import os
 import time
+from functools import lru_cache
 
 import requests
-import whisper
+from faster_whisper import WhisperModel
 
 AUDIO_URL = "https://github.com/AssemblyAI-Examples/audio-examples/raw/main/20230607_me_canadian_wildfires.mp3"
 LOCAL_AUDIO_FILE = "audio.wav"
@@ -22,19 +24,41 @@ def download_audio_file(url: str = AUDIO_URL, local_path: str = LOCAL_AUDIO_FILE
     return local_path
 
 
+@lru_cache(maxsize=1)
+def _load_model() -> WhisperModel:
+    """
+    Load faster-whisper once to avoid re-initializing the model.
+    """
+    device_env = os.environ.get("FAST_WHISPER_DEVICE") or os.environ.get("WHISPER_DEVICE")
+    device = (device_env or "auto").strip().lower()
+    if device == "auto":
+        device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") not in {None, ""} else "cpu"
+
+    model_size = (os.environ.get("FAST_WHISPER_MODEL") or "tiny").strip()
+    compute_type = "int8_float16" if device == "cuda" else "int8"
+    return WhisperModel(model_size, device=device, compute_type=compute_type)
+
+
 def transcribe_audio(local_path: str) -> str:
     """
-    Uses the Whisper model to transcribe the audio file at local_path.
+    Uses faster-whisper to transcribe the audio file at local_path.
     Returns the transcript text.
     """
-    # Load a Whisper model - choose "tiny", "base", "small", "medium", "large"
-    # or e.g. "medium.en" for English-only transcription:
-    model = whisper.load_model("small")
+    model = _load_model()
 
-    # Transcribe the audio
-    result = model.transcribe(local_path)
-    transcript = result["text"].strip()
-    return transcript
+    segments, _info = model.transcribe(
+        local_path,
+        vad_filter=True,
+        beam_size=1,
+    )
+
+    parts = []
+    for segment in segments:
+        text = (segment.text or "").strip()
+        if text:
+            parts.append(text)
+
+    return " ".join(parts).strip()
 
 
 def main():

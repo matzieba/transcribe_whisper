@@ -1,4 +1,3 @@
-# diarize_transcribe.py
 from __future__ import annotations
 
 import os
@@ -10,6 +9,9 @@ from pathlib import Path
 from typing import List, Optional
 
 import requests
+import torchaudio
+from faster_whisper import WhisperModel
+from pyannote.audio import Pipeline
 
 AUDIO_URL = "https://github.com/AssemblyAI-Examples/audio-examples/raw/main/20230607_me_canadian_wildfires.mp3"
 
@@ -95,20 +97,6 @@ def ensure_wav_16k_mono(
     return dst
 
 
-def _best_device() -> str:
-    """
-    Prefer MPS on Apple Silicon, else CPU.
-    """
-    try:
-        import torch
-
-        if torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
 # -----------------------------
 # Model loaders (cached)
 # -----------------------------
@@ -118,8 +106,6 @@ def get_diarization_pipeline():
         raise EnvironmentError(
             "HF_TOKEN is not set. Export HF_TOKEN to use pyannote diarization."
         )
-
-    from pyannote.audio import Pipeline
 
     try:
         pipeline = Pipeline.from_pretrained(
@@ -139,78 +125,31 @@ def get_diarization_pipeline():
 
 
 @lru_cache(maxsize=1)
-def get_transcriber(prefer_faster_whisper: bool = True):
+def get_transcriber():
     """
-    Returns a callable that transcribes wav_path -> List[TranscriptionSegment].
-    Prefers faster-whisper if installed (free, local, significantly faster).
+    Returns a faster-whisper model instance for transcription.
     """
-    if prefer_faster_whisper:
-        try:
-            from faster_whisper import WhisperModel
+    # Env-driven device selection: FAST_WHISPER_DEVICE or WHISPER_DEVICE.
+    # Options: auto (default), cpu, cuda, mps.
+    device_env = os.environ.get("FAST_WHISPER_DEVICE") or os.environ.get("WHISPER_DEVICE")
+    device = (device_env or "auto").strip().lower()
+    if device == "auto":
+        device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") not in {None, ""} else "cpu"
 
-            # Env-driven device selection: FAST_WHISPER_DEVICE or WHISPER_DEVICE.
-            # Options: auto (default), cpu, cuda, mps.
-            device_env = os.environ.get("FAST_WHISPER_DEVICE") or os.environ.get("WHISPER_DEVICE")
-            device = (device_env or "auto").strip().lower()
-            if device == "auto":
-                device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") not in {None, ""} else "cpu"
+    # Default to tiny model for speed; override via FAST_WHISPER_MODEL.
+    model_size = (os.environ.get("FAST_WHISPER_MODEL") or "tiny").strip()
 
-            # Default to tiny model for speed; override via FAST_WHISPER_MODEL.
-            model_size = (os.environ.get("FAST_WHISPER_MODEL") or "tiny").strip()
+    # int8 is fast on CPU; use int8_float16 on GPU for speed/quality.
+    compute_type = "int8_float16" if device == "cuda" else "int8"
 
-            # int8 is fast on CPU; use int8_float16 on GPU for speed/quality.
-            compute_type = "int8_float16" if device == "cuda" else "int8"
-
-            model = WhisperModel(model_size, device=device, compute_type=compute_type)
-
-            def _fw_transcribe(wav_path: Path) -> List[TranscriptionSegment]:
-                segments, _info = model.transcribe(
-                    str(wav_path),
-                    vad_filter=True,          # skip silences => faster
-                    beam_size=1,              # faster
-                )
-                out: List[TranscriptionSegment] = []
-                for s in segments:
-                    text = (s.text or "").strip()
-                    if text:
-                        out.append(TranscriptionSegment(s.start, s.end, text))
-                return out
-
-            return _fw_transcribe
-        except ImportError:
-            pass  # fall back to openai-whisper
-
-    import whisper
-
-    device = "cpu"
-    model = whisper.load_model("small", device=device)
-
-    def _whisper_transcribe(wav_path: Path) -> List[TranscriptionSegment]:
-        result = model.transcribe(str(wav_path), verbose=False)
-        out: List[TranscriptionSegment] = []
-        for seg in result.get("segments", []):
-            text = (seg.get("text") or "").strip()
-            if text:
-                out.append(TranscriptionSegment(float(seg["start"]), float(seg["end"]), text))
-        return out
-
-    return _whisper_transcribe
+    return WhisperModel(model_size, device=device, compute_type=compute_type)
 
 
 # -----------------------------
 # Core pipeline steps
 # -----------------------------
 def diarize_audio(wav_16k_mono: Path) -> List[DiarizationSegment]:
-    import torchaudio
-
     waveform, sample_rate = torchaudio.load(str(wav_16k_mono))
-    # waveform should already be mono 16k, but keep this robust:
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    if int(sample_rate) != 16000:
-        waveform = torchaudio.functional.resample(waveform, int(sample_rate), 16000)
-        sample_rate = 16000
-
     pipeline = get_diarization_pipeline()
     diarization_out = pipeline(
         {"waveform": waveform, "sample_rate": int(sample_rate), "uri": str(wav_16k_mono)}
@@ -230,11 +169,20 @@ def diarize_audio(wav_16k_mono: Path) -> List[DiarizationSegment]:
     return segments
 
 
-def transcribe_audio(wav_16k_mono: Path, prefer_faster_whisper: bool = True) -> List[TranscriptionSegment]:
-    transcriber = get_transcriber(prefer_faster_whisper=prefer_faster_whisper)
-    segs = transcriber(wav_16k_mono)
-    segs.sort(key=lambda s: (s.start, s.end))
-    return segs
+def transcribe_audio(wav_16k_mono: Path) -> List[TranscriptionSegment]:
+    model = get_transcriber()
+    segments, _info = model.transcribe(
+        str(wav_16k_mono),
+        vad_filter=True,  # skip silences => faster
+        beam_size=1,      # faster
+    )
+    out: List[TranscriptionSegment] = []
+    for s in segments:
+        text = (s.text or "").strip()
+        if text:
+            out.append(TranscriptionSegment(s.start, s.end, text))
+    out.sort(key=lambda s: (s.start, s.end))
+    return out
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -276,7 +224,6 @@ def run_pipeline(
     url: str = AUDIO_URL,
     workdir: Path = DEFAULT_WORKDIR,
     max_duration_sec: Optional[float] = None,
-    prefer_faster_whisper: bool = True,
     enable_diarization: Optional[bool] = None,
 ) -> List[LabeledSegment]:
     t0 = time.perf_counter()
@@ -297,19 +244,19 @@ def run_pipeline(
     else:
         diar = []
 
-    tr = transcribe_audio(wav, prefer_faster_whisper=prefer_faster_whisper)
+    tr = transcribe_audio(wav)
     merged = merge_diarization_and_transcript(diar, tr)
 
     elapsed = time.perf_counter() - t0
     print(
         f"[timing] pipeline completed in {elapsed:.2f}s "
-        f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper={prefer_faster_whisper})"
+        f"(max_duration_sec={max_duration_sec}, diarization={do_diarization}, faster_whisper=True)"
     )
     return merged
 
 
 def main():
-    merged = run_pipeline(max_duration_sec=60, prefer_faster_whisper=True)
+    merged = run_pipeline(max_duration_sec=60)
     for s in merged:
         print(f"[{s.start:6.2f} → {s.end:6.2f}] {s.speaker}: {s.text}")
 
