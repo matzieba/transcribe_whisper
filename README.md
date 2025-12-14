@@ -5,12 +5,16 @@
 - Build and start the stack: `docker-compose up --build`
 - Access the Streamlit app at the URL printed in logs (typically http://localhost:8501).
 - Logs show ffmpeg/whisper/pyannote output; stop with `Ctrl+C`.
+- Models: faster-whisper `tiny` is baked into the image for quicker first run. Caches are stored in `_cache/` via a volume.
 
 ## Configure credentials (no secrets committed)
 - Hugging Face token is required for diarization (pyannote). Create one at https://huggingface.co/settings/tokens with access to `pyannote/speaker-diarization-3.1`.
 - Add it to a local `.env` (loaded by the app) or export before `docker-compose up`:
   - `.env` example: `HF_TOKEN=hf_your_token_here`
   - Optional: `ENABLE_DIARIZATION=false` to skip diarization (no HF token needed).
+- Speed/compute toggles (override in `.env`):
+  - `FAST_WHISPER_DEVICE`: `auto` (default) or `cpu`. Docker on Apple Silicon runs CPU-only.
+  - `FAST_WHISPER_MODEL`: whisper size; defaults to `tiny` for speed (`base`/`small` for quality).
 
 ## Run the transcription script (CLI)
 If you prefer local (non-docker) execution:

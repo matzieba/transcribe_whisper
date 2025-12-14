@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/root/.cache/huggingface \
+    TRANSFORMERS_CACHE=/root/.cache/huggingface \
+    XDG_CACHE_HOME=/root/.cache
 
 WORKDIR /app
 
@@ -19,6 +22,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
  && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchaudio==2.3.1 \
  && pip install -r requirements.txt
+
+# Prefetch faster-whisper tiny model into the image to avoid first-run downloads
+RUN python - <<'PY'
+from faster_whisper.utils import download_model
+
+# Downloads model weights into cache (HF_HOME/XDG_CACHE_HOME).
+download_model("tiny")
+PY
 
 COPY . .
 
